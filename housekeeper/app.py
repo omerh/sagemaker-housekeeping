@@ -1,3 +1,5 @@
+import json
+
 import boto3
 
 
@@ -9,10 +11,10 @@ def check_sagemaker_notebooks(sagemaker_client):
 
 
 def get_aws_regions():
-    client = boto3.client('ec2')
+    ec2_client = boto3.client('ec2')
     try:
         print("Listing regions")
-        regions = [region['RegionName'] for region in client.describe_regions()['Regions']]
+        regions = [region['RegionName'] for region in ec2_client.describe_regions()['Regions']]
     except Exception as e:
         print("Failed to list regions")
         raise e
@@ -69,16 +71,43 @@ def delete_sagemaker_endpoint(sagemaker_client, endpoint_name):
     )
 
 
+def describe_sagemaker_monitoring_config(sagemaker_client, monitoring_schedule_name):
+    monitoring = sagemaker_client.describe_monitoring_schedule(
+        MonitoringScheduleName=monitoring_schedule_name
+    )
+    # print(monitoring['MonitoringScheduleConfig'])
+    return monitoring['MonitoringScheduleConfig']
+
+
+def describe_sagemaker_monitoring_schedule(sagemaker_client, endpoint_name):
+    monitoring_schedule = sagemaker_client.list_monitoring_schedules(
+        EndpointName=endpoint_name
+    )
+
+    schedule_configs = []
+    for schedule in monitoring_schedule['MonitoringScheduleSummaries']:
+        monitoring_schedule_config = describe_sagemaker_monitoring_config(sagemaker_client,
+                                                                          schedule['MonitoringScheduleName'])
+        schedule_configs.append({'config_name': schedule['MonitoringScheduleName'],
+                                 'config': monitoring_schedule_config})
+
+    return schedule_configs
+
+
 def sagemaker_endpoints(sagemaker_client):
     endpoints = get_sagemaker_endpoints(sagemaker_client)
     if len(endpoints) > 0:
         for endpoint in endpoints:
             described_endpoint = describe_sagemaker_endpoint(sagemaker_client, endpoint['EndpointName'])
-            print(described_endpoint)
+            # checking if there is a monitoring schedule to the endpoint that prevents deleting the endpoint
+            described_monitoring_configs = describe_sagemaker_monitoring_schedule(sagemaker_client,
+                                                                                   endpoint['EndpointName'])
+
             result = save_sagemaker_endpoint_config_to_dynamodb(
                 described_endpoint['EndpointName'],
                 described_endpoint['EndpointConfigName'],
-                sagemaker_client.meta.region_name)
+                sagemaker_client.meta.region_name,
+                described_monitoring_configs)
 
             if result == 0:
                 delete_sagemaker_endpoint(sagemaker_client, described_endpoint['EndpointName'])
@@ -92,16 +121,22 @@ def describe_sagemaker_endpoint(sagemaker_client, endpoint_name):
     return response
 
 
-def save_sagemaker_endpoint_config_to_dynamodb(endpoint_name, endpoint_config, endpoint_region):
+def save_sagemaker_endpoint_config_to_dynamodb(endpoint_name, endpoint_config, endpoint_region, monitoring_configs):
     print("saving to dynamodb", endpoint_name, endpoint_config, endpoint_region)
     dynamodb_client = boto3.client('dynamodb')
+    print(monitoring_configs)
+    # print(type(monitoring_configs))
+    # print(json.loads(monitoring_configs))
+    # print(json.dumps(monitoring_configs))
+
     try:
         dynamodb_client.put_item(
             TableName='testing_sagemaker_housekeeping',
             Item={
                 'endpoint_name': {'S': endpoint_name},
                 'endpoint_config': {'S': endpoint_config},
-                'endpoint_region': {'S': endpoint_region}
+                'endpoint_region': {'S': endpoint_region},
+                'monitoring_config': {'S': json.dumps(monitoring_configs)},
             }
         )
     except Exception as err:
@@ -121,6 +156,6 @@ def lambda_handler(event, context):
 
 
 if __name__ == "__main__":
-    event = ""
-    context = []
-    lambda_handler(event, context)
+    main_event = ""
+    main_context = []
+    lambda_handler(main_event, main_context)
